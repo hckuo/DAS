@@ -1,3 +1,4 @@
+#define pr_fmt(fmt) "DAS: " fmt
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
@@ -29,7 +30,7 @@ int __init das_init(void)
 	printk(KERN_INFO "LOADING\n");
 	hash_init(domains);
 	_init_proc_api();
-	dispatcher = kthread_run(dispatch_thread, NULL, "dispatcher");
+	/* dispatcher = kthread_run(dispatch_thread, NULL, "dispatcher"); */
 	printk(KERN_INFO "LOADED\n");
 	return 0;
 }
@@ -38,7 +39,8 @@ void __exit das_exit(void)
 {
 	printk(KERN_INFO "UNLOADING\n");
 	_remove_proc_api();
-	kthread_stop(dispatcher);
+  clear_domains();
+	/* kthread_stop(dispatcher); */
 	printk(KERN_INFO "UNLOADED\n");
 }
 
@@ -71,11 +73,26 @@ static void _remove_proc_api(void)
 static ssize_t das_read(struct file *file, char __user * buffer,
 			size_t count, loff_t * data)
 {
-	int copied;
-	char kbuf[PROC_BUF_SIZE];
-
 	if ((long)*data > 0)
 		return 0;
+
+	int copied, bkt;
+	char kbuf[PROC_BUF_SIZE];
+  struct domain *d;
+  struct member *m;
+
+  spin_lock(&domain_lock);
+
+  hash_for_each(domains, bkt, d, hlist) {
+    list_for_each_entry(m, &d->members->list, list) {
+      char tmpbuf[32];
+      sprintf(tmpbuf, "%d %d\n", d->domain_id, m->member_id);
+      copied += strlen(tmpbuf);
+      strcat(kbuf, tmpbuf);
+    }
+  }
+
+  spin_unlock(&domain_lock);
 
 	copied = 0;
 	copy_to_user(buffer, kbuf, copied);
@@ -92,25 +109,24 @@ static ssize_t das_write(struct file *file, const char __user * buffer,
 	int copied, did, mid;
 	int err = copy_from_user(kbuf, buffer, count);
 	if (!err) {
-		sscanf(kbuf, "%c", &action);
-		sscanf(kbuf, "%d", &did);
-		if (did >= DOMAIN_MAX_CNT)
-			goto Inval;
-		switch (action) {
+		switch (kbuf[0]) {
 		case 'R':
+      sscanf(kbuf, "%c %d %d", &action, &did, &mid);
+      printk(KERN_INFO "act: %c, did %d mid %d\n", action, did, mid);
+      if (did >= DOMAIN_MAX_CNT)
+        goto Inval;
 			if (!get_domain(did)) {
 				printk(KERN_INFO "Adding a domain %d\n", did);
 				add_domain(did);
 			}
-
-			while (!sscanf(kbuf, "%d", &mid)) {
-				printk(KERN_INFO "Adding a member %d\n", mid);
-				add_member(did, mid);
-			}
-
+      printk(KERN_INFO "Adding a member %d\n", mid);
+      add_member(did, mid);
 			break;
 
 		case 'D':
+      sscanf(kbuf, "%c %d", &action, &did);
+      if (did >= DOMAIN_MAX_CNT)
+        goto Inval;
 			remove_domain(did);
 			break;
 
@@ -166,6 +182,7 @@ static int add_member(int did, int mid)
 	if (!d)
 		return -EINVAL;
 	m = kmalloc(sizeof(struct member), GFP_KERNEL);
+  m->member_id = mid;
 	m->task = find_task_by_pid(mid);
 	m->domain = d;
 	spin_lock(&d->member_lock);
@@ -181,12 +198,25 @@ static void remove_domain(int did)
 	d = get_domain(did);
 
 	spin_lock(&d->member_lock);
-	list_for_each_entry_safe(m, tmp, &d->members, list) {
+	list_for_each_entry_safe(m, tmp, &d->members->list, list) {
 		list_del(&m->list);
 		kfree(m);
 	}
+  d->members = NULL;
 	spin_unlock(&d->member_lock);
 
 	hash_del(&d->hlist);
 	kfree(d);
+}
+
+static void clear_domains()
+{
+  int bkt;
+  struct domain *d;
+  struct hlist_node *tmp;
+  spin_lock(&domain_lock);
+  hash_for_each_safe(domains, bkt, tmp, d, hlist) {
+    remove_domain(d->domain_id);
+  }
+  spin_unlock(&domain_lock);
 }

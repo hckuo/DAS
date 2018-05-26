@@ -1,5 +1,4 @@
-#define pr_fmt(fmt)	"DAS: " fmt
-#define PROC_BUF_SIZE 128
+#define PROC_BUF_SIZE 512
 #define DOMAIN_HASH_SIZE 6
 #define SCHED_GRANULARITY 100
 #define DOMAIN_MAX_CNT (2 << DOMAIN_HASH_SIZE)
@@ -20,6 +19,7 @@ struct domain {
 };
 
 struct member {
+  int member_id;
 	struct task_struct *task;
 	struct domain *domain;
 	struct list_head list;
@@ -32,6 +32,7 @@ static int dispatch_thread(void *);
 static int add_domain(int);
 static struct domain *get_domain(int);
 static void remove_domain(int);
+static void clear_domains(void);
 static int add_member(int, int);
 
 struct task_struct *find_task_by_pid(unsigned int nr)
